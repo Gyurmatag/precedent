@@ -24,12 +24,13 @@ import {
 	describeOutcome,
 	groupPositions,
 	isError,
+	outcomeKey,
 	pickQuestion,
 	type Position,
 } from "./behavior.ts";
 import { examine } from "./examiner.ts";
 import { ZERO_SHA } from "./git.ts";
-import { assignModels, CLERK_MODEL, callJson, clefChoose, INTEGRATOR_MODELS, modelLabel, REDRAFT_MODELS } from "./models.ts";
+import { assignModels, CLERK_MODEL, callJson, clefAsk, INTEGRATOR_MODELS, modelLabel, REDRAFT_MODELS, type ClefQuestion } from "./models.ts";
 import {
 	CLERK_SCHEMA,
 	clerkPrompt,
@@ -38,6 +39,8 @@ import {
 	integratorPrompt,
 	PROBES_SCHEMA,
 	prosecutorPrompt,
+	TITLE_SCHEMA,
+	titlePrompt,
 	type ClerkOutput,
 	type PrecedentBrief,
 } from "./prompts.ts";
@@ -70,6 +73,7 @@ interface Candidate {
 	treeHash: string;
 	outcomes?: Outcome[];
 	passes?: boolean;
+	blast?: number; // carts outside the change's scope that now behave differently than on trunk
 }
 
 interface PendingLanding {
@@ -95,6 +99,15 @@ function emptyState(): CourtState {
 		metrics: { agents: 0, drafts: 0, standing: 0, questions: 0, settledByClef: 0, humanRulings: 0, humanMs: 0, landed: 0, llmCalls: 0 },
 		startedAt: null,
 	};
+}
+
+function describeCart(cart: Cart): string {
+	const items = (Array.isArray(cart.items) ? cart.items : []) as Record<string, unknown>[];
+	const lines = items.map((i) => `${i.qty} x ${i.name ?? i.sku} at €${(Number(i.price) / 100).toFixed(2)}${i.category ? ` (${i.category})` : ""}`);
+	const extras = Object.entries(cart)
+		.filter(([k]) => k !== "items")
+		.map(([k, v]) => `${k} ${typeof v === "object" ? JSON.stringify(v) : String(v)}`);
+	return [lines.length ? lines.join(", ") : "empty cart", ...extras].join("; ");
 }
 
 /** Cart fields a ticket introduces, e.g. "cart.coupon" in its text. */
@@ -598,7 +611,8 @@ export class Court extends Agent<Env, CourtState> {
 			const out = await callJson<ClerkOutput>(this.env, CLERK_MODEL, p.system, p.user, CLERK_SCHEMA, { maxTokens: 6000, effort: "medium" });
 			q.headline = out.data.headline;
 			for (const l of out.data.labels ?? []) {
-				const opt = options.find((o) => o.key === l.key);
+				const key = String(l.key ?? "").trim().toUpperCase().replace(/^OPTION\s*/, "").replace(/[^A-Z]/g, "").slice(0, 1);
+				const opt = options.find((o) => o.key === key);
 				if (opt && l.label) opt.label = l.label.length > 90 ? `${l.label.slice(0, 88).trimEnd()}…` : l.label;
 				// Only quote an agent verbatim: the clerk may pick a quote but not write one.
 				const norm = (x: string) => x.trim().replace(/^["'“”]+|["'“”]+$/g, "").trim();
@@ -630,34 +644,76 @@ export class Court extends Agent<Env, CourtState> {
 		}
 	}
 
+	/**
+	 * Clef triage with focused questions (broad questions make it hedge):
+	 * 1. Does the ticket text itself require one option? → settle it.
+	 * 2. Is this behavior the ticket doesn't touch, with one option keeping today's? → keep it.
+	 * 3. Do existing precedents require one option? → settle it.
+	 * Anything else is a genuine product decision for a human.
+	 */
 	private async triage(q: QuestionView): Promise<boolean> {
 		const f = this.feature(q.featureId);
-		const precedents = this.state.casebook.filter((p) => !p.overruled).map((p) => `#${p.n} ${p.title}`);
-		const criteria: Record<string, string> = {};
-		for (const o of q.options) criteria[o.key] = `${o.label} (${describeOutcome(o.outcome)})${o.keepsBehavior ? " — this is exactly what the code did before this ticket" : ""}`;
+		const precedents = this.state.casebook.filter((p) => !p.overruled);
 		const keeper = q.options.find((o) => o.keepsBehavior);
-		criteria.open = "Neither the ticket nor the existing decisions settle this; it is a product decision for a human.";
+		const fields = q.fields.length ? q.fields.join(", ") : "whether the cart is accepted";
+		const state = [
+			`Ticket text: "${f.spec}"`,
+			`Cart: ${describeCart(q.cart)}`,
+			`The options disagree on: ${fields}.`,
+			...q.options.map(
+				(o) => `Option ${o.key}: ${describeOutcome(o.outcome)} (${o.label}).${o.keepsBehavior ? " This is what the code did before this ticket." : ""}`,
+			),
+			...(precedents.length ? ["Existing decisions:", ...precedents.map((p) => `- #${p.n} ${p.title}: for ${describeCart(p.cart)} → ${describeOutcome(p.expect)}`)] : []),
+		].join("\n");
+		const byText: Record<string, string> = {};
+		for (const o of q.options) byText[o.key] = `The ticket text requires option ${o.key}`;
+		byText.unclear = "The ticket text does not determine this";
+		const questions: Record<string, ClefQuestion> = {
+			ticket: {
+				type: "choice",
+				instructions: "Read the ticket text literally. Which option does the ticket text itself require for this cart? Choose 'unclear' if the ticket text does not determine it.",
+				criteria: byText,
+			},
+		};
+		if (keeper) questions.changes = { type: "noul", instructions: `Does the ticket text ask to change how ${fields} are calculated?` };
+		if (precedents.length) {
+			const byPrecedent: Record<string, string> = {};
+			for (const o of q.options) byPrecedent[o.key] = `The existing decisions require option ${o.key}`;
+			byPrecedent.unclear = "The existing decisions do not determine this";
+			questions.precedent = {
+				type: "choice",
+				instructions: "Which option do the existing decisions logically require for this cart? Choose 'unclear' unless they clearly do.",
+				criteria: byPrecedent,
+			};
+		}
 		this.countLlm();
-		const verdict = await clefChoose(
-			this.env,
-			`Ticket: ${f.title}. ${f.spec}\nExisting decisions: ${precedents.join("; ") || "none"}\nCart: ${JSON.stringify(q.cart)}\nQuestion: ${q.headline ?? "Which receipt is correct?"}${keeper ? `\nBefore this ticket, the code produced option ${keeper.key} for this cart. Existing behavior must be kept unless the ticket text explicitly asks to change it.` : ""}`,
-			"Does the ticket text, an existing decision, or the rule to keep existing behavior that the ticket does not mention already determine which option is correct? Choose that option only if it is clearly determined; otherwise choose open.",
-			criteria,
-		);
-		if (!verdict) return false;
-		if (verdict.choice === "open" || verdict.p < CLEF_SETTLE_P) {
-			q.triage = { open: true, p: verdict.probabilities.open ?? 1 - verdict.p };
+		const answers = await clefAsk(this.env, state, questions);
+		if (!answers) return false;
+
+		let settled: { key: string; p: number; reason: string } | null = null;
+		const t = answers.ticket;
+		if (t?.type === "choice" && t.choice !== "unclear" && (t.probabilities[t.choice] ?? 0) >= CLEF_SETTLE_P)
+			settled = { key: t.choice, p: t.probabilities[t.choice], reason: "The ticket text already says so" };
+		const c = answers.changes;
+		if (!settled && keeper && c?.type === "noul" && c.noul <= 1 - CLEF_SETTLE_P)
+			settled = { key: keeper.key, p: 1 - c.noul, reason: "The ticket doesn't touch this, so today's behavior is kept" };
+		const pr = answers.precedent;
+		if (!settled && pr?.type === "choice" && pr.choice !== "unclear" && (pr.probabilities[pr.choice] ?? 0) >= CLEF_SETTLE_P)
+			settled = { key: pr.choice, p: pr.probabilities[pr.choice], reason: "Existing precedents already require it" };
+
+		const option = settled && q.options.find((o) => o.key === settled!.key);
+		if (!settled || !option) {
+			const unclear = t?.type === "choice" ? (t.probabilities.unclear ?? 0) : 0;
+			q.triage = { open: true, p: unclear };
 			return false;
 		}
-		const option = q.options.find((o) => o.key === verdict.choice);
-		if (!option) return false;
-		q.triage = { settledBy: "clef", option: option.key, p: verdict.p };
+		q.triage = { settledBy: "clef", option: option.key, p: settled.p, reason: settled.reason };
 		q.status = "settled";
 		this.patch((s) => {
 			s.docket.push(q);
 			s.metrics.settledByClef++;
 		});
-		this.addPrecedent(q, option, "clef", `Settled by the ticket (Clef, p=${verdict.p.toFixed(2)})`);
+		this.addPrecedent(q, option, "clef", `${settled.reason} (Clef, p=${settled.p.toFixed(2)})`);
 		return true;
 	}
 
@@ -679,7 +735,27 @@ export class Court extends Agent<Env, CourtState> {
 			s.casebook.push(p);
 		});
 		this.log("ruling", `Precedent #${n} (${by === "human" ? "you" : "Clef"}): ${p.title}`);
+		void this.schedule(0, "titlePrecedent", { n, headline: q.headline });
 		return p;
+	}
+
+	/** The clerk restates a ruling as a general rule ("Coupons stack with the mug deal"). */
+	async titlePrecedent({ n, headline }: { n: number; headline?: string }) {
+		const p = this.state.casebook.find((x) => x.n === n);
+		if (!p || p.landedIn) return;
+		try {
+			const prompt = titlePrompt(this.feature(p.featureId), headline, p.cart, p.expect, p.title);
+			this.countLlm();
+			const out = await callJson<{ title: string }>(this.env, CLERK_MODEL, prompt.system, prompt.user, TITLE_SCHEMA, { maxTokens: 2000 });
+			const title = out.data.title?.trim().replace(/\.$/, "");
+			if (!title || title.length > 90) return;
+			this.patch((s) => {
+				const x = s.casebook.find((y) => y.n === n);
+				if (x && !x.landedIn) x.title = title;
+			});
+		} catch {
+			// keep the option label
+		}
 	}
 
 	/** Browser: rule on an open question. */
@@ -778,11 +854,34 @@ export class Court extends Agent<Env, CourtState> {
 			for (const id of latest) if (!queue.includes(id) && !remaining.includes(id)) remaining.push(id);
 			await this.ctx.storage.put("landingQueue", remaining);
 			if (remaining.some((id) => !queue.includes(id))) await this.schedule(0, "processLandings");
-			if (this.state.features.every((f) => f.status === "landed" || f.status === "blocked")) {
+			if (this.state.phase === "running" && this.state.features.every((f) => f.status === "landed" || f.status === "blocked")) {
 				this.patch((s) => (s.phase = "done"));
 				this.log("info", "Every ticket is landed or blocked. Session complete.");
 			}
 		});
+	}
+
+	/** Carts from every ticket's probes: the pool for measuring unintended behavior changes. */
+	private async behaviorPool(): Promise<Cart[]> {
+		const pool: Cart[] = [...BASE_PROBES];
+		for (const f of this.state.features) {
+			const p = await this.ctx.storage.get<Cart[]>(`probes:${f.id}`);
+			if (p) pool.push(...p.slice(0, 24));
+		}
+		return dedupeCarts(pool, 120);
+	}
+
+	/** Blast radius: how many carts outside `inScope` behave differently than on trunk today. */
+	private async blastRadius(candidates: Candidate[], inScope: (c: Cart) => boolean) {
+		const pool = (await this.behaviorPool()).filter((c) => !inScope(c));
+		const trunkFiles = await this.trunkFiles();
+		const ref = await examine(this.env, await treeHashOf(trunkFiles), trunkFiles, pool);
+		await Promise.all(
+			candidates.map(async (c) => {
+				const exam = await examine(this.env, c.treeHash, c.files, pool);
+				c.blast = exam.loadError ? Number.POSITIVE_INFINITY : pool.filter((_, i) => outcomeKey(exam.outcomes[i]) !== outcomeKey(ref.outcomes[i])).length;
+			}),
+		);
 	}
 
 	private async verify(candidates: Candidate[], probes: Cart[], binding: PrecedentView[]) {
@@ -941,7 +1040,11 @@ export class Court extends Agent<Env, CourtState> {
 			}
 		}
 
-		const chosen = passing.sort((a, b) => ["fast-forward", "diff3", "integrator"].indexOf(a.via) - ["fast-forward", "diff3", "integrator"].indexOf(b.via))[0];
+		// Prefer the candidate that changes the fewest behaviors outside this ticket's scope.
+		const own = ticketFields(feature);
+		if (own.length) await this.blastRadius(passing, (c) => Object.keys(c).some((k) => own.includes(k)));
+		const order = ["fast-forward", "diff3", "integrator"];
+		const chosen = passing.sort((a, b) => (a.blast ?? 0) - (b.blast ?? 0) || order.indexOf(a.via) - order.indexOf(b.via))[0];
 		return this.commitLanding(featureId, winner, chosen);
 	}
 
@@ -1025,6 +1128,7 @@ export class Court extends Agent<Env, CourtState> {
 			`Precedent-Rulings: ${rulings}`,
 			`Precedent-Draft: ${winner.id} (${modelLabel(winner.model)})`,
 			`Precedent-Via: ${chosen.via}${chosen.model ? ` (${modelLabel(chosen.model)})` : ""}`,
+			...(chosen.blast !== undefined ? [`Precedent-Blast-Radius: ${chosen.blast} unrelated carts changed`] : []),
 		].join("\n");
 		const otherDrafts = this.state.drafts.filter((d) => d.featureId === featureId && d.id !== winner.id);
 		const note = [
@@ -1044,10 +1148,13 @@ export class Court extends Agent<Env, CourtState> {
 				const f = s.features.find((x) => x.id === featureId)!;
 				f.status = "landed";
 				f.landedCommit = res.commit;
-				s.landings.unshift({ commit: res.commit, featureIds: [featureId], precedents: newPrecedents.map((p) => p.n), via: chosen.via, at: Date.now() });
+				s.landings.unshift({ commit: res.commit, featureIds: [featureId], precedents: newPrecedents.map((p) => p.n), via: chosen.via, at: Date.now(), blast: chosen.blast });
 				s.metrics.landed++;
 			});
-			this.log("landing", `Landed ${feature.title} on trunk at ${res.commit.slice(0, 7)} via ${chosen.via} (${res.objects} objects pushed, compare-and-swap on main).`);
+			this.log(
+				"landing",
+				`Landed ${feature.title} on trunk at ${res.commit.slice(0, 7)} via ${chosen.via} (${res.objects} objects pushed, compare-and-swap on main${chosen.blast !== undefined ? `; ${chosen.blast} unrelated carts changed` : ""}).`,
+			);
 			return "landed";
 		}
 		if (res.stale && retries > 0) {
@@ -1141,7 +1248,11 @@ export class Court extends Agent<Env, CourtState> {
 						)
 					).filter((c): c is NonNullable<typeof c> => c !== null);
 					const all = await this.verify(candidates, probes, binding);
-					chosen = candidates.find((c) => c.passes);
+					const passing = candidates.filter((c) => c.passes);
+					if (passing.length) {
+						await this.blastRadius(passing, (c) => JSON.stringify(c) === JSON.stringify(p.cart));
+						chosen = passing.sort((a, b) => (a.blast ?? 0) - (b.blast ?? 0))[0];
+					}
 					if (!chosen && candidates[0]) problems = this.failures(candidates[0], all, binding);
 				}
 			}
@@ -1160,6 +1271,7 @@ export class Court extends Agent<Env, CourtState> {
 				`Precedent-Overrules: #${old}`,
 				`Precedent-Rulings: #${next}`,
 				`Precedent-Via: ${chosen.id === "trunk" ? "no code change needed" : `integrator (${modelLabel(chosen.model!)})`}`,
+				...(chosen.blast !== undefined ? [`Precedent-Blast-Radius: ${chosen.blast} other carts changed`] : []),
 			].join("\n");
 			const note = `Appeal on ticket ${this.feature(p.featureId).title}: #${old} (${before.title}) overruled by #${next} (${p.title}).`;
 			const res = await this.pushTrunk(files, message, note);
@@ -1170,9 +1282,12 @@ export class Court extends Agent<Env, CourtState> {
 			this.patch((s) => {
 				const x = s.casebook.find((y) => y.n === next)!;
 				x.landedIn = res.commit;
-				s.landings.unshift({ commit: res.commit, featureIds: [p.featureId], precedents: [next], via: chosen!.id === "trunk" ? "fast-forward" : "integrator", at: Date.now() });
+				s.landings.unshift({ commit: res.commit, featureIds: [p.featureId], precedents: [next], via: chosen!.id === "trunk" ? "fast-forward" : "integrator", at: Date.now(), blast: chosen!.blast, appeal: old });
 			});
-			this.log("landing", `Trunk now follows precedent #${next} (${res.commit.slice(0, 7)}). The code followed the law.`);
+			this.log(
+				"landing",
+				`Trunk now follows precedent #${next} (${res.commit.slice(0, 7)})${chosen.blast !== undefined ? `; ${chosen.blast} other carts changed behavior` : ""}. The code followed the law.`,
+			);
 		});
 	}
 
@@ -1190,6 +1305,11 @@ export class Court extends Agent<Env, CourtState> {
 
 	async getState(): Promise<CourtState> {
 		return this.state;
+	}
+
+	/** Same as the browser's overrule(), for API and CLI callers. */
+	async overruleFromApi(input: { precedentN: number; optionKey: string; rationale?: string }) {
+		return this.overrule(input);
 	}
 
 	/** Same as the browser's rule(), for API and CLI callers. */

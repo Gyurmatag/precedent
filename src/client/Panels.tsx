@@ -173,8 +173,9 @@ export function Trunk({ state, sessionId }: { state: CourtState; sessionId: stri
 							{l.featureIds.map((id) => state.features.find((f) => f.id === id)?.title).join(", ")}
 							<br />
 							<span>
-								via {l.via}
+								{l.appeal ? `appeal of #${l.appeal} · ` : ""}via {l.via}
 								{l.precedents.length ? ` · precedents ${l.precedents.map((n) => `#${n}`).join(", ")}` : ""}
+								{l.blast !== undefined ? ` · blast radius ${l.blast}` : ""}
 							</span>
 						</div>
 					</div>

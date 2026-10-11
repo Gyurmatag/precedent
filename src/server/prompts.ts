@@ -225,3 +225,23 @@ applying the new rule generally (not just for this one cart), and keep all other
 Return { "files": [ { "path", "content" } ] } with the full content of every src/ file you change.`,
 	};
 }
+
+export const TITLE_SCHEMA = {
+	type: "object",
+	properties: { title: { type: "string" } },
+	required: ["title"],
+};
+
+export function titlePrompt(feature: FeatureSpec, headline: string | undefined, cart: Cart, chosen: Outcome, label: string) {
+	return {
+		system: "You write case law for a checkout engine: one short, general, declarative rule. Respond with JSON only.",
+		user: `Ticket: ${feature.title}
+Question that was decided: ${headline ?? "(none)"}
+Cart: ${JSON.stringify(cart)}
+Decision: ${label} (${describeOutcome(chosen)})
+
+Write the decision as a general rule of at most 10 words, without amounts unless they are the rule itself,
+e.g. "Free shipping applies at exactly €50", "Coupons stack with the mug deal",
+"Reject coupons above 100%". Return { "title": "..." }.`,
+	};
+}

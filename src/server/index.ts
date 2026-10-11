@@ -80,8 +80,12 @@ export default {
 			}
 			if (url.pathname === "/api/sessions" && request.method === "POST") return await createSession(request, env);
 
-			const m = url.pathname.match(/^\/api\/sessions\/([a-z0-9]{6,12})\/(file|clone|state|rule)$/);
+			const m = url.pathname.match(/^\/api\/sessions\/([a-z0-9]{6,12})\/(file|clone|state|rule|overrule)$/);
 			if (m && m[2] === "state" && request.method === "GET") return json(await (await court(env, m[1])).getState());
+			if (m && m[2] === "overrule" && request.method === "POST") {
+				const input = (await request.json()) as { precedentN: number; optionKey: string; rationale?: string };
+				return json(await (await court(env, m[1])).overruleFromApi(input));
+			}
 			if (m && m[2] === "rule" && request.method === "POST") {
 				const input = (await request.json()) as { questionId: string; optionKey: string; rationale?: string };
 				return json(await (await court(env, m[1])).ruleFromApi(input));

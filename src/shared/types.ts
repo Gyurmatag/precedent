@@ -60,7 +60,7 @@ export interface QuestionView {
 	leverage: number; // drafts or candidates this answer resolves
 	askedAt: number;
 	status: "open" | "ruled" | "settled";
-	triage?: { settledBy: "clef"; option: string; p: number } | { open: true; p: number };
+	triage?: { settledBy: "clef"; option: string; p: number; reason?: string } | { open: true; p: number };
 }
 
 export interface PrecedentView {
@@ -86,6 +86,8 @@ export interface LandingView {
 	precedents: number[];
 	via: "fast-forward" | "diff3" | "integrator";
 	at: number;
+	blast?: number; // carts outside the change's scope whose behavior changed
+	appeal?: number; // the precedent this commit overruled
 }
 
 export interface EventView {

@@ -100,31 +100,24 @@ export async function callJson<T>(
 	throw lastError;
 }
 
-export interface ClefChoice {
-	choice: string;
-	p: number;
-	probabilities: Record<string, number>;
-}
+export type ClefAnswer =
+	| { type: "choice"; choice: string; probabilities: Record<string, number> }
+	| { type: "noul"; noul: number };
+
+export type ClefQuestion =
+	| { type: "choice"; instructions: string; criteria: Record<string, string> }
+	| { type: "noul"; instructions: string };
 
 /**
- * Ask Clef, Cloudflare's calibrated decision model, which option the ticket and
- * existing precedents already settle (or that nothing settles it).
+ * Ask Clef, Cloudflare's calibrated decision model, several focused questions
+ * about one state. Returns null if the call fails (callers then ask a human).
  */
-export async function clefChoose(env: Env, state: string, instructions: string, criteria: Record<string, string>): Promise<ClefChoice | null> {
+export async function clefAsk(env: Env, state: string, questions: Record<string, ClefQuestion>): Promise<Record<string, ClefAnswer> | null> {
 	try {
-		const out = (await env.AI.run(CLEF_MODEL as keyof AiModels, {
-			model: "clef",
-			state,
-			questions: { verdict: { type: "choice", instructions, criteria } },
-		} as never)) as { answers?: Record<string, unknown> };
-		const verdict = out?.answers?.verdict as
-			| { choice?: string; answer?: string; probabilities?: Record<string, number>; options?: Record<string, number> }
-			| undefined;
-		if (!verdict) return null;
-		const probabilities = verdict.probabilities ?? verdict.options ?? {};
-		const choice =
-			verdict.choice ?? verdict.answer ?? Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
-		return { choice, p: probabilities[choice] ?? 0, probabilities };
+		const out = (await env.AI.run(CLEF_MODEL as keyof AiModels, { model: "clef", state, questions } as never)) as {
+			answers?: Record<string, ClefAnswer>;
+		};
+		return out?.answers ?? null;
 	} catch {
 		return null;
 	}
