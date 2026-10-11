@@ -22,6 +22,7 @@ function normalize(receipt) {
     const v = receipt[f];
     if (typeof v === "number" && Number.isFinite(v)) out[f] = Math.round(v);
   }
+  if (Array.isArray(receipt.applied)) out.applied = receipt.applied.slice(0, 6).map((x) => String(x).slice(0, 80));
   return out;
 }
 

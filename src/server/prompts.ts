@@ -99,7 +99,8 @@ ${feature.spec}
 Several agents are implementing this ticket independently, and the ticket leaves decisions open.
 Propose 8 carts that would expose differences between reasonable implementations: boundaries,
 rounding, interaction with tax and shipping, extreme or invalid values. Use the cart format above,
-with integer cent prices and realistic item names. Return { "carts": [ ... ] }.`,
+with integer cent prices and realistic item names. Use only items, country and the fields this ticket
+introduces; never use fields that belong to other features. Return { "carts": [ ... ] }.`,
 	};
 }
 
@@ -127,23 +128,36 @@ export interface ClerkOutput {
 export function clerkPrompt(
 	feature: FeatureSpec,
 	cart: Cart,
-	options: { key: string; outcome: Outcome; quotes: string[] }[],
+	options: { key: string; outcome: Outcome; full?: Outcome; quotes: string[] }[],
 ) {
+	const receipt = (o: { outcome: Outcome; full?: Outcome }) => {
+		const full = o.full ?? o.outcome;
+		if ("error" in full) return `rejects the cart (${full.error})`;
+		const applied = full.applied?.length ? `; rules applied: ${full.applied.join(" | ")}` : "";
+		return `${describeOutcome(full)}${applied}`;
+	};
 	return {
-		system: "You are a court clerk. You turn disagreements between implementations into one plain-language product question. Respond with JSON only.",
+		system:
+			"You are a court clerk. You turn a disagreement between implementations into one precise, plain-language product question. Respond with JSON only.",
 		user: `Ticket: ${feature.title}
 ${feature.spec}
 
-Agents implemented the ticket differently. For this cart:
+Different agents implemented this ticket. On this exact cart they disagree:
 ${JSON.stringify(cart)}
 
-their implementations produce different receipts:
-${options.map((o) => `${o.key}: ${describeOutcome(o.outcome)}\n   their stated assumptions: ${o.quotes.slice(0, 4).join(" | ") || "none"}`).join("\n")}
+${options.map((o) => `Option ${o.key}: ${receipt(o)}\n  assumptions stated by the agents behind ${o.key}: ${o.quotes.slice(0, 6).map((q) => JSON.stringify(q)).join(" ") || "none"}`).join("\n")}
 
-Return:
-- headline: the product decision a human must make, as a question of at most 12 words.
-- labels: for each option key, the rule it implies, in at most 10 words, and "why": the one stated
-  assumption (quoted verbatim from that option's list) that best explains it, or "" if none does.`,
+First work out what is special about THIS cart that makes the options differ (for example a fractional
+percentage, an empty cart, a value over a limit, rounding of an odd amount, two rules that may or may not
+stack, or an order of operations). Compare the "rules applied" lists: a rule missing from one option is
+usually the real difference.
+Then return:
+- headline: the product decision as a concrete question of at most 14 words that names that specific
+  trigger, e.g. "Should a 12.5% coupon be accepted, or only whole percentages?"
+- labels: for each option key, the rule it implies for carts like this, in at most 10 words, concrete
+  (mention amounts or conditions), e.g. "Accept fractional percent: €3.00 off".
+- why: for each option, the one assumption from that option's list that explains it, copied verbatim,
+  or "" if none of them is about this difference.`,
 	};
 }
 
@@ -184,6 +198,30 @@ Its stated assumptions: ${assumptions.join(" | ") || "none"}
 
 Write the current trunk's src/ files so that quote() keeps every existing behavior and precedent,
 and adds this ticket exactly as the approved implementation behaves.${problems.length ? `\n\nA previous integration attempt failed:\n${problems.map((p) => `- ${p}`).join("\n")}` : ""}
+Return { "files": [ { "path", "content" } ] } with the full content of every src/ file you change.`,
+	};
+}
+
+export function conformPrompt(
+	trunkFiles: Record<string, string>,
+	precedents: PrecedentBrief[],
+	overruled: PrecedentBrief,
+	ruling: PrecedentBrief,
+	problems: string[] = [],
+) {
+	return {
+		system:
+			"You change a codebase so it obeys a new human ruling. The binding precedents are the specification. Respond with JSON only.",
+		user: `Current trunk:
+${repoListing(trunkFiles)}
+${precedentList(precedents)}
+A human overruled precedent #${overruled.n} (${overruled.title}: ${describeOutcome(overruled.expect)})
+with precedent #${ruling.n} (${ruling.title}) for this cart:
+${JSON.stringify(ruling.cart)}
+quote() must now return: ${describeOutcome(ruling.expect)}.
+
+Change src/ so that quote() satisfies precedent #${ruling.n} and every other binding precedent above,
+applying the new rule generally (not just for this one cart), and keep all other behavior.${problems.length ? `\n\nA previous attempt failed:\n${problems.map((x) => `- ${x}`).join("\n")}` : ""}
 Return { "files": [ { "path", "content" } ] } with the full content of every src/ file you change.`,
 	};
 }

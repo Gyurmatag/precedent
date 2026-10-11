@@ -8,7 +8,7 @@ export const BEHAVIOR_FIELDS = ["subtotal", "discount", "shipping", "tax", "tota
 export type BehaviorField = (typeof BEHAVIOR_FIELDS)[number];
 
 /** What a draft did with one probe cart: a normalized receipt, or a rejection. */
-export type Outcome = { error: string } | Partial<Record<BehaviorField, number>>;
+export type Outcome = { error: string } | (Partial<Record<BehaviorField, number>> & { applied?: string[] });
 
 export type DraftStatus = "queued" | "forking" | "drafting" | "pushing" | "examining" | "standing" | "dismissed" | "overruled" | "chosen";
 
@@ -45,6 +45,8 @@ export interface QuestionOption {
 	models: string[];
 	quotes: string[]; // agents' own one-line assumptions supporting this option
 	why?: string; // the single assumption that best explains this option (picked by the clerk)
+	keepsBehavior?: boolean; // this option is what the code did before the ticket
+	applied?: string[]; // the receipt's own labels for the rules it applied (context only)
 }
 
 export interface QuestionView {
@@ -72,6 +74,9 @@ export interface PrecedentView {
 	decidedBy: "human" | "clef";
 	decidedAt: number;
 	overruled?: boolean;
+	overruledBy?: number;
+	overrules?: number;
+	questionId?: string;
 	landedIn?: string;
 }
 

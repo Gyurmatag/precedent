@@ -28,7 +28,7 @@ function sleep(ms: number) {
 }
 
 /** Wait until a repo that is still being created or forked answers metadata reads. */
-async function waitReady(env: Env, name: string, timeoutMs = 30_000) {
+async function waitReady(env: Env, name: string, timeoutMs = 45_000) {
 	const deadline = Date.now() + timeoutMs;
 	let lastError: unknown;
 	while (Date.now() < deadline) {
@@ -48,7 +48,7 @@ async function waitReady(env: Env, name: string, timeoutMs = 30_000) {
  * Fork with retries. Parallel forks occasionally fail with a transient internal
  * error, and a failed attempt may still have created the fork in the background.
  */
-export async function forkWithRetry(env: Env, source: string, name: string, attempts = 5) {
+export async function forkWithRetry(env: Env, source: string, name: string, attempts = 3) {
 	let lastError: unknown;
 	for (let i = 0; i < attempts; i++) {
 		try {
@@ -63,6 +63,33 @@ export async function forkWithRetry(env: Env, source: string, name: string, atte
 		}
 	}
 	throw lastError;
+}
+
+/**
+ * Fallback when a fork can't be created: a fresh repo holding one root commit
+ * with the same files (and therefore the same tree hash) as the base.
+ */
+export async function snapshotRepo(env: Env, name: string, files: Record<string, string>, message: string) {
+	let remote: string;
+	try {
+		remote = (await createRepo(env, name, "Draft workspace (snapshot of trunk)")).remote;
+	} catch {
+		remote = (await waitReady(env, name, 15_000)).remote;
+	}
+	const token = await writeToken(env, name, 300);
+	const existing = await headOf(remote, token);
+	const res = await commitFiles(env, {
+		repoName: name,
+		remote,
+		token,
+		ref: "refs/heads/main",
+		expectedOld: existing ?? ZERO_SHA,
+		parents: existing ? [existing] : [],
+		files,
+		message,
+	});
+	if (!res.ok) throw new Error(`snapshot push failed: ${res.reason}`);
+	return { name, remote, commit: res.commit, tree: res.tree };
 }
 
 /** Recursively read every file under a tree. */
@@ -188,13 +215,13 @@ export async function headOf(remote: string, token: string, ref = "refs/heads/ma
 	return (await lsRefs(remote, token)).refs[ref];
 }
 
-export async function deleteRepos(env: Env, prefix: string): Promise<number> {
+export async function deleteRepos(env: Env, prefix: string, keep?: string): Promise<number> {
 	let deleted = 0;
 	let cursor: string | undefined;
 	const names: string[] = [];
 	do {
 		const page = await env.ARTIFACTS.list({ limit: 100, cursor });
-		for (const r of page.repos) if (r.name.startsWith(prefix)) names.push(r.name);
+		for (const r of page.repos) if (r.name.startsWith(prefix) && r.name !== keep) names.push(r.name);
 		cursor = page.cursor;
 	} while (cursor);
 	for (const n of names) {

@@ -18,7 +18,10 @@ export const FLEET: FleetModel[] = [
 
 /** Fast, uncapped models for clerk work (labels, probes, integration). */
 export const CLERK_MODEL = "@cf/openai/gpt-oss-120b";
-export const INTEGRATOR_MODELS = ["@cf/openai/gpt-oss-120b", "@cf/nvidia/nemotron-3-120b-a12b"];
+/** Integration rewrites whole files, so it uses the strongest coding models. */
+export const INTEGRATOR_MODELS = ["@cf/moonshotai/kimi-k2.7-code", "@cf/deepseek-ai/deepseek-v4-flash-0731"];
+/** Models for re-drafting a ticket directly on the current trunk. */
+export const REDRAFT_MODELS = ["@cf/moonshotai/kimi-k2.7-code", "@cf/openai/gpt-oss-120b", "@cf/zai-org/glm-5.3-flash"];
 export const CLEF_MODEL = "@cf/cloudflare/clef";
 
 /** Pick models for a feature's drafts: round-robin, offset per feature so every model gets work. */
@@ -67,7 +70,7 @@ export async function callJson<T>(
 	system: string,
 	user: string,
 	schema: object,
-	opts: { maxTokens?: number; attempts?: number } = {},
+	opts: { maxTokens?: number; attempts?: number; effort?: "low" | "medium" | "high" } = {},
 ): Promise<JsonCallResult<T>> {
 	const attempts = opts.attempts ?? 3;
 	let lastError: unknown;
@@ -81,7 +84,7 @@ export async function callJson<T>(
 				],
 				response_format: { type: "json_schema", json_schema: schema },
 				max_tokens: opts.maxTokens ?? 8000,
-				reasoning_effort: "low",
+				reasoning_effort: opts.effort ?? "low",
 			} as never);
 			const raw = extractContent(out);
 			if (raw === undefined || raw === "") throw new Error("empty model output");

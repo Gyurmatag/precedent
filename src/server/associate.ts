@@ -8,7 +8,7 @@ import { examine } from "./examiner.ts";
 import { ZERO_SHA } from "./git.ts";
 import { callJson, modelLabel } from "./models.ts";
 import { DRAFT_SCHEMA, draftPrompt, repairPrompt, type DraftOutput, type PrecedentBrief } from "./prompts.ts";
-import { commitFiles, forkWithRetry, headOf, treeHashOf, writeToken } from "./repo.ts";
+import { commitFiles, headOf, treeHashOf, writeToken } from "./repo.ts";
 import { BASE_PROBES } from "./seed.ts";
 import type { Court } from "./court.ts";
 
@@ -23,6 +23,7 @@ export interface DraftJob {
 	files: Record<string, string>;
 	precedents: PrecedentBrief[];
 	forkName: string;
+	workspace: { name: string; remote: string; parent: string; parentTree: string };
 }
 
 export interface DraftReport {
@@ -59,8 +60,7 @@ export class Associate extends Agent<Env> {
 		const t0 = Date.now();
 		const report: DraftReport = { draftId: job.draftId, ok: false, changed: {}, examples: [], assumptions: [], ms: 0 };
 		try {
-			await court.draftStatus(job.draftId, "forking");
-			const fork = await forkWithRetry(this.env, job.trunkRepo, job.forkName);
+			const fork = job.workspace;
 			report.repo = fork.name;
 			await court.draftStatus(job.draftId, "drafting", fork.name);
 
@@ -104,8 +104,8 @@ export class Associate extends Agent<Env> {
 				token,
 				ref: "refs/heads/draft",
 				expectedOld: existing ?? ZERO_SHA,
-				parents: [job.baseSha],
-				parentTree: job.baseTree,
+				parents: [fork.parent],
+				parentTree: fork.parentTree,
 				files: { ...job.files, ...check.changed },
 				message: [
 					`Draft: ${job.feature.title}`,

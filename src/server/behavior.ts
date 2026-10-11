@@ -60,7 +60,7 @@ export function consistent(o: Outcome, expect: Outcome): boolean {
 export interface QuestionPlan {
 	probeIndex: number;
 	fields: BehaviorField[];
-	options: { outcome: Outcome; positionIds: string[]; draftIds: string[] }[];
+	options: { outcome: Outcome; full: Outcome; positionIds: string[]; draftIds: string[] }[];
 	settles: number; // drafts eliminated whichever option is chosen (at least)
 }
 
@@ -106,7 +106,7 @@ export function pickQuestion(positions: Position[], probes: Cart[], maxOptions =
 			best = {
 				probeIndex: i,
 				fields,
-				options: options.map((g) => ({ ...g, outcome: restrict(g.outcome, fields) })),
+				options: options.map((g) => ({ ...g, full: g.outcome, outcome: restrict(g.outcome, fields) })),
 				settles,
 			};
 		}
@@ -148,7 +148,7 @@ export function formatCents(n: number | undefined): string {
 /** A compact human description of an outcome for prompts and labels. */
 export function describeOutcome(o: Outcome): string {
 	if (isError(o)) return "rejects the cart";
-	return Object.entries(o)
-		.map(([f, v]) => `${f} ${f === "points" ? v : formatCents(v as number)}`)
+	return BEHAVIOR_FIELDS.filter((f) => o[f] !== undefined)
+		.map((f) => `${f} ${f === "points" ? o[f] : formatCents(o[f])}`)
 		.join(", ");
 }
