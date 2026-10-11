@@ -1,0 +1,9 @@
+{
+  "extends": "agents/tsconfig",
+  "compilerOptions": {
+    "types": ["./worker-configuration.d.ts", "vite/client"],
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "target": "ES2022"
+  },
+  "include": ["src", "vite.config.ts"]
+}
