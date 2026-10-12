@@ -61,8 +61,25 @@ Browser (React) ──WebSocket state sync──▶ Court (Agents SDK Durable Ob
 1. If trunk hasn't moved since the draft forked, the commit is a **fast-forward**.
 2. Otherwise Precedent tries a **diff3** merge, and two **integrator agents** rebuild the approved behavior on the current trunk in parallel.
 3. Every candidate must satisfy every precedent.
-4. If passing candidates still behave differently on carts that combine features, that interaction becomes a question for a human.
-5. The winner is pushed with compare-and-swap against the `main` it was verified on.
+4. If passing candidates still behave differently on carts that combine features, that **interaction** becomes a question for a human.
+5. Among the passing candidates, Precedent picks the one with the smallest **blast radius**: the fewest carts outside the ticket's scope whose behavior changes. The number is recorded as a `Precedent-Blast-Radius` commit trailer.
+6. The winner is pushed with compare-and-swap against the `main` it was verified on.
+
+If an approved change can't be carried onto the moved trunk without breaking a precedent, the Court **re-drafts** the ticket once. Fresh agents draft directly on the current trunk with every precedent in hand.
+
+### Clef triage, with focused questions
+Broad questions make a calibrated model hedge, so Clef is asked narrow ones:
+- *Does the ticket text itself require one option?* For example, "free shipping for orders of €50 **or more**" settles the exactly-€50 case at p≈0.98.
+- *Does the ticket ask to change the fields in dispute?* If not, the option that keeps today's behavior is kept. This auto-settles unintended regressions, e.g. a gift-card draft that started taxing shipping.
+- *Do existing precedents already require one option?*
+
+Only genuine product decisions reach a human. Each settled question is still recorded as a precedent, marked "Clef", with its probability.
+
+### Appeals: change the law, the code follows
+Open a precedent in the casebook and choose a different answer to its original question.
+1. The old precedent is marked overruled and the new one binds.
+2. If the ticket has already landed, integrator agents rewrite trunk until every precedent holds, picking the smallest blast radius.
+3. The result lands as an `Appeal:` commit with a `Precedent-Overrules` trailer.
 
 ### Designed for Cloudflare's limits
 - **Model rate limits:** frontier Workers AI models allow 20 requests per minute per account. Drafts are spread round-robin across six models, uncapped models carry the clerk work, and each draft uses one or two large-context calls.
@@ -74,7 +91,7 @@ Browser (React) ──WebSocket state sync──▶ Court (Agents SDK Durable Ob
 
 ## Try it
 
-**Live demo:** _URL added at submission_
+**Live demo:** https://precedent.cfi-ops.workers.dev
 
 1. Open the demo, keep the default tickets, and press **Convene the swarm**. That starts 24 agents on 6 tickets.
 2. Within a few minutes, questions appear on **the bench**. Press `1`/`2`/… and `Enter` to rule, optionally with a one-line reason.
@@ -88,7 +105,7 @@ The demo has a daily session budget. If it's used up, self-host below.
 You need a Cloudflare account on the **Workers Paid** plan (Artifacts is in open beta there), Node.js 22+, and Wrangler logged in (`npx wrangler login`).
 
 ```sh
-git clone <this repo> precedent && cd precedent
+git clone https://github.com/Gyurmatag/precedent && cd precedent
 npm install
 npm run dev          # Vite + Workers runtime locally; Artifacts and Workers AI run remotely
 ```
@@ -110,6 +127,7 @@ Configuration lives in `wrangler.jsonc`:
 curl -X POST localhost:5173/api/sessions -d '{"featureIds":["percent-coupon","free-shipping"],"agentsPerFeature":3}'
 curl localhost:5173/api/sessions/<id>/state            # full court state as JSON
 curl -X POST localhost:5173/api/sessions/<id>/rule -d '{"questionId":"…","optionKey":"B","rationale":"…"}'
+curl -X POST localhost:5173/api/sessions/<id>/overrule -d '{"precedentN":2,"optionKey":"B","rationale":"…"}'
 curl -X POST localhost:5173/api/sessions/<id>/clone    # read-only capability URL for git clone
 ```
 
