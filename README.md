@@ -75,6 +75,14 @@ Broad questions make a calibrated model hedge, so Clef is asked narrow ones:
 
 Only genuine product decisions reach a human. Each settled question is still recorded as a precedent, marked "Clef", with its probability.
 
+### Bring your own agent
+Any agent that can run `git` and `curl`, such as Claude Code, Codex or a CI job, can take a seat in a live session next to the cloud swarm:
+- `POST /api/sessions/:id/seats` gives it its own **Artifacts fork** of trunk and a write token scoped to that fork only.
+- It clones the fork, implements the ticket, pushes to `draft`, and calls `…/seats/:draftId/submit` with its stated assumptions and examples.
+- The Court reads the commit straight from the fork and cross-examines it with everyone else's drafts. If it disagrees with the swarm, the human decides, and the ruling binds it too.
+
+`GET /api/sessions/:id/join` serves step-by-step instructions written for agents. In the UI, **Bring your own agent** gives you a one-line prompt to paste into Claude Code.
+
 ### Appeals: change the law, the code follows
 Open a precedent in the casebook and choose a different answer to its original question.
 1. The old precedent is marked overruled and the new one binds.
