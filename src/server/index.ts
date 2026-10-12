@@ -76,7 +76,13 @@ export default {
 
 		try {
 			if (url.pathname === "/api/features" && request.method === "GET") {
-				return json({ features: FEATURES, defaults: DEFAULT_FEATURES, maxDrafts: MAX_DRAFTS });
+				return json({
+					features: FEATURES,
+					defaults: DEFAULT_FEATURES,
+					maxDrafts: MAX_DRAFTS,
+					showcase: env.SHOWCASE_SESSION || null,
+					source: env.SOURCE_URL || null,
+				});
 			}
 			if (url.pathname === "/api/sessions" && request.method === "POST") return await createSession(request, env);
 

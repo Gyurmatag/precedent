@@ -15,13 +15,17 @@ export function Landing() {
 	const [agents, setAgents] = useState(4);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [showcase, setShowcase] = useState<string | null>(null);
+	const [source, setSource] = useState<string | null>(null);
 
 	useEffect(() => {
 		fetch("/api/features")
-			.then((r) => r.json() as Promise<{ features: FeatureSpec[]; defaults: string[] }>)
+			.then((r) => r.json() as Promise<{ features: FeatureSpec[]; defaults: string[]; showcase: string | null; source: string | null }>)
 			.then((d) => {
 				setFeatures(d.features);
 				setSelected(d.defaults);
+				setShowcase(d.showcase);
+				setSource(d.source);
 			})
 			.catch(() => setError("Could not load tickets."));
 	}, []);
@@ -51,9 +55,16 @@ export function Landing() {
 			<div className="topbar">
 				<Brand />
 				<div className="spacer" />
-				<a className="pill" href="https://github.com/" target="_blank" rel="noreferrer">
-					Source
-				</a>
+				{showcase && (
+					<a className="pill" href={`/s/${showcase}`} onClick={(e) => (e.preventDefault(), navigate(`/s/${showcase}`))}>
+						Watch a finished session
+					</a>
+				)}
+				{source && (
+					<a className="pill" href={source} target="_blank" rel="noreferrer">
+						Source
+					</a>
+				)}
 			</div>
 			<main className="landing">
 				<section className="hero">

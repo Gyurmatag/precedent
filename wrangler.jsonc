@@ -23,6 +23,10 @@
   "worker_loaders": [{ "binding": "LOADER" }],
   "ai": { "binding": "AI", "remote": true },
   "vars": {
-    "MAX_SESSIONS_PER_DAY": "40"
+    // Public demo budget: each session runs ~24 agents on Workers AI.
+    "MAX_SESSIONS_PER_DAY": "12",
+    // A finished session to show when the budget is used up (set after recording one).
+    "SHOWCASE_SESSION": "",
+    "SOURCE_URL": "https://github.com/Gyurmatag/precedent"
   }
 }
