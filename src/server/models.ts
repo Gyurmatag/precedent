@@ -30,6 +30,7 @@ export function assignModels(featureIndex: number, count: number): FleetModel[] 
 }
 
 export function modelLabel(id: string): string {
+	if (id.startsWith("external:")) return id.slice("external:".length);
 	return FLEET.find((m) => m.id === id)?.label ?? id.split("/").pop() ?? id;
 }
 

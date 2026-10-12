@@ -166,9 +166,17 @@ export interface RefAdvertisement {
 	capabilities: string[];
 }
 
-/** Read current refs from the receive-pack advertisement (cheap, no clone). */
-export async function lsRefs(remote: string, token: string): Promise<RefAdvertisement> {
-	const res = await fetch(`${remote}/info/refs?service=git-receive-pack`, { headers: authHeaders(token) });
+/**
+ * Read current refs from a smart-HTTP advertisement (cheap, no clone).
+ * receive-pack needs a write token and also lists push capabilities;
+ * upload-pack works with read tokens too.
+ */
+export async function lsRefs(
+	remote: string,
+	token: string,
+	service: "git-receive-pack" | "git-upload-pack" = "git-receive-pack",
+): Promise<RefAdvertisement> {
+	const res = await fetch(`${remote}/info/refs?service=${service}`, { headers: authHeaders(token) });
 	if (!res.ok) throw new Error(`info/refs failed: ${res.status} ${await res.text()}`);
 	const lines = parsePktLines(new Uint8Array(await res.arrayBuffer()));
 	const refs: Record<string, string> = {};

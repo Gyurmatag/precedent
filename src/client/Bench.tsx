@@ -92,6 +92,8 @@ export function Bench({ state, onRule }: { state: CourtState; onRule: (questionI
 		setReason("");
 		setBusy(false);
 		shownAt.current = Date.now();
+		// A new question: number keys should choose an option, not type into the reason field.
+		reasonRef.current?.blur();
 	}, [q?.id]);
 
 	async function submit(index = choice) {

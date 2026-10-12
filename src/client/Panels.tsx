@@ -5,13 +5,43 @@ import { clock, positionColor, POSITION_COLORS } from "./format.ts";
 const WORKING = ["queued", "forking", "drafting", "pushing", "examining"];
 
 function draftTitle(d: DraftView): string {
-	const lines = [`${d.id} · ${d.model.split("/").pop()}`, `status: ${d.status}${d.positionId ? ` · position ${d.positionId}` : ""}`];
+	const lines = [`${d.id} · ${d.model.startsWith("external:") ? `external agent: ${d.model.slice(9)}` : d.model.split("/").pop()}`, `status: ${d.status}${d.positionId ? ` · position ${d.positionId}` : ""}`];
 	if (d.note) lines.push(d.note);
 	if (d.assumptions.length) lines.push("", ...d.assumptions.map((a) => `• ${a}`));
 	return lines.join("\n");
 }
 
-export function Swarm({ state }: { state: CourtState }) {
+function BringYourOwnAgent({ sessionId }: { sessionId: string }) {
+	const [open, setOpen] = useState(false);
+	const [copied, setCopied] = useState(false);
+	const prompt = `Join the Precedent session: read ${window.location.origin}/api/sessions/${sessionId}/join and follow the instructions.`;
+	if (!open)
+		return (
+			<button className="link-btn" onClick={() => setOpen(true)}>
+				⌘ Bring your own agent…
+			</button>
+		);
+	return (
+		<div className="appeal">
+			<div className="appeal-title">
+				Paste this into Claude Code (or any agent that can run git and curl). It gets its own fork and joins the swarm:
+			</div>
+			<div className="clone">{prompt}</div>
+			<button
+				className="btn small"
+				onClick={async () => {
+					await navigator.clipboard.writeText(prompt);
+					setCopied(true);
+				}}
+			>
+				{copied ? "Copied" : "Copy prompt"}
+			</button>
+		</div>
+	);
+}
+
+export function Swarm({ state, sessionId }: { state: CourtState; sessionId: string }) {
+	const accepting = state.phase === "running" && state.features.some((f) => f.status === "drafting");
 	return (
 		<section className="panel">
 			<header>
@@ -19,6 +49,7 @@ export function Swarm({ state }: { state: CourtState }) {
 				<span className="count">{state.drafts.length} agents</span>
 			</header>
 			<div className="body">
+				{accepting && <BringYourOwnAgent sessionId={sessionId} />}
 				{state.features.map((f) => {
 					const drafts = state.drafts.filter((d) => d.featureId === f.id);
 					return (
@@ -40,7 +71,7 @@ export function Swarm({ state }: { state: CourtState }) {
 											className={`draft ${working ? "working" : d.status}`}
 											style={colored ? { background: positionColor(d.positionId) } : undefined}
 										>
-											{d.status === "overruled" ? "✕" : d.status === "chosen" ? "★" : i + 1}
+											{d.status === "overruled" ? "✕" : d.status === "chosen" ? "★" : d.model.startsWith("external:") ? "⌘" : i + 1}
 										</span>
 									);
 								})}

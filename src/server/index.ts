@@ -64,6 +64,50 @@ async function cloneUrl(env: Env, id: string) {
 	return json({ remote: info.remote, cloneUrl: remote, expiresIn: 3600 });
 }
 
+/** Instructions an external agent (Claude Code, Codex, ...) can follow to join a live session. */
+function joinInstructions(origin: string, id: string): string {
+	const api = `${origin}/api/sessions/${id}`;
+	return `# Join Precedent session ${id}
+
+You are joining a swarm of agents. Several agents draft the same tickets in parallel. Precedent
+cross-examines every draft against the others and asks a human only where behavior disagrees.
+Watch the session at ${origin}/s/${id}
+
+## 1. Take a seat
+\`\`\`sh
+curl -s -X POST ${api}/seats -H 'content-type: application/json' -d '{"name":"claude-code"}' > seat.json
+\`\`\`
+\`seat.json\` contains your ticket, your own Artifacts fork (\`seat.remote\`), a write token scoped to that
+fork (\`seat.token\`, valid 1 hour), \`seat.secret\` for submitting, and the binding \`seat.precedents\`.
+Keep the token out of files, git config and logs.
+
+## 2. Clone your fork
+\`\`\`sh
+REMOTE=$(jq -r .seat.remote seat.json); TOKEN=$(jq -r .seat.token seat.json)
+git -c http.extraHeader="Authorization: Bearer $TOKEN" clone "$REMOTE" work && cd work
+\`\`\`
+
+## 3. Implement the ticket
+Read \`AGENTS.md\`. Implement \`seat.ticket\` in \`src/\` (plain JavaScript, no dependencies). Every
+precedent in \`seat.precedents\` must hold. \`npm test\` checks the ones already in the repo.
+Whenever the ticket leaves a product decision open, make a reasonable choice and note it in one sentence.
+
+## 4. Push to the \`draft\` branch of your fork
+\`\`\`sh
+git checkout -b draft && git add -A && git commit -m "Draft: <ticket title>"
+git -c http.extraHeader="Authorization: Bearer $TOKEN" push origin draft
+\`\`\`
+
+## 5. Submit
+\`\`\`sh
+curl -s -X POST ${api}/seats/$(jq -r .seat.draftId ../seat.json)/submit -H 'content-type: application/json' \\
+  -d '{"secret":"<seat.secret>","assumptions":["<one sentence per decision>"],"examples":[{"input":{"items":[...]},"expected":{"total":1234}}]}'
+\`\`\`
+Your draft is now cross-examined alongside the swarm's drafts. If it disagrees with them, a human decides,
+and the ruling binds everyone, including you.
+`;
+}
+
 export default {
 	async fetch(request, env): Promise<Response> {
 		const url = new URL(request.url);
@@ -85,6 +129,20 @@ export default {
 				});
 			}
 			if (url.pathname === "/api/sessions" && request.method === "POST") return await createSession(request, env);
+
+			const seat = url.pathname.match(/^\/api\/sessions\/([a-z0-9]{6,12})\/seats(?:\/([a-z0-9-]{3,60})\/submit)?$/);
+			if (seat && request.method === "POST") {
+				const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+				const c = await court(env, seat[1]);
+				if (!seat[2]) {
+					const r = await c.openSeat({ featureId: typeof body.featureId === "string" ? body.featureId : undefined, name: typeof body.name === "string" ? body.name : undefined });
+					return json(r, r.ok ? 200 : 409);
+				}
+				const r = await c.submitSeat({ draftId: seat[2], secret: String(body.secret ?? ""), assumptions: body.assumptions, examples: body.examples });
+				return json(r, r.ok ? 200 : 409);
+			}
+			const join = url.pathname.match(/^\/api\/sessions\/([a-z0-9]{6,12})\/join$/);
+			if (join && request.method === "GET") return new Response(joinInstructions(url.origin, join[1]), { headers: { "Content-Type": "text/markdown; charset=utf-8" } });
 
 			const m = url.pathname.match(/^\/api\/sessions\/([a-z0-9]{6,12})\/(file|clone|state|rule|overrule)$/);
 			if (m && m[2] === "state" && request.method === "GET") return json(await (await court(env, m[1])).getState());

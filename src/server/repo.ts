@@ -212,7 +212,7 @@ async function buildNote(env: Env, plan: CommitPlan, target: string) {
 }
 
 export async function headOf(remote: string, token: string, ref = "refs/heads/main"): Promise<string | undefined> {
-	return (await lsRefs(remote, token)).refs[ref];
+	return (await lsRefs(remote, token, "git-upload-pack")).refs[ref];
 }
 
 export async function deleteRepos(env: Env, prefix: string, keep?: string): Promise<number> {

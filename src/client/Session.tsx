@@ -98,7 +98,7 @@ export function Session({ id }: { id: string }) {
 					<Metrics state={state} />
 					<main className="session">
 						<div className="stack">
-							<Swarm state={state} />
+							<Swarm state={state} sessionId={id} />
 						</div>
 						<div className="stack">
 							<Bench state={state} onRule={rule} />

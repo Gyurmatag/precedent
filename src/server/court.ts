@@ -44,7 +44,7 @@ import {
 	type ClerkOutput,
 	type PrecedentBrief,
 } from "./prompts.ts";
-import { commitFiles, createRepo, deleteRepos, forkWithRetry, headOf, readFilesAt, snapshotRepo, treeHashOf, writeToken } from "./repo.ts";
+import { commitFiles, createRepo, deleteRepos, forkWithRetry, headOf, readFilesAt, readToken, snapshotRepo, treeHashOf, writeToken } from "./repo.ts";
 import { BASE_PROBES, FEATURES, SEED_FILES } from "./seed.ts";
 
 export interface SessionConfig {
@@ -1289,6 +1289,105 @@ export class Court extends Agent<Env, CourtState> {
 				`Trunk now follows precedent #${next} (${res.commit.slice(0, 7)})${chosen.blast !== undefined ? `; ${chosen.blast} other carts changed behavior` : ""}. The code followed the law.`,
 			);
 		});
+	}
+
+	// ── bring your own agent ─────────────────────────────────────────────────
+
+	/**
+	 * Open a seat for an external agent (Claude Code, Codex, a CI job…): it gets its
+	 * own Artifacts fork of trunk and a write token scoped to that fork only.
+	 */
+	async openSeat(input: { featureId?: string; name?: string }) {
+		if (this.state.phase !== "running") return { ok: false as const, error: "this session is not running" };
+		const seats = this.state.drafts.filter((d) => d.model.startsWith("external:")).length;
+		if (seats >= 6) return { ok: false as const, error: "this session already has 6 external seats" };
+		const feature = this.state.features.find((f) => f.status === "drafting" && (!input.featureId || f.id === input.featureId));
+		if (!feature) return { ok: false as const, error: "no ticket is still accepting drafts in this session" };
+
+		const name = (input.name ?? "external agent").replace(/[^\w .-]/g, "").slice(0, 32) || "external agent";
+		const draft: DraftView = { id: `${feature.id}-x${seats + 1}`, featureId: feature.id, model: `external:${name}`, status: "queued", assumptions: [] };
+		this.patch((s) => {
+			s.drafts.push(draft);
+			s.metrics.agents++;
+		});
+		const trunk = this.state.trunk!;
+		const forkName = `s${this.state.sessionId}-${draft.id}`;
+		this.setDraft(draft.id, (x) => (x.status = "forking"));
+		let workspace: { name: string; remote: string; parent: string };
+		try {
+			const fork = await forkWithRetry(this.env, trunk.repo, forkName);
+			workspace = { ...fork, parent: trunk.head };
+		} catch {
+			const snap = await snapshotRepo(this.env, forkName, await this.trunkFiles(), `Snapshot of ${trunk.repo}@${trunk.head.slice(0, 7)}`);
+			workspace = { name: snap.name, remote: snap.remote, parent: snap.commit };
+		}
+		const secret = crypto.randomUUID();
+		await this.ctx.storage.put(`seat:${draft.id}`, { secret, workspace, openedAt: Date.now() });
+		await this.ctx.storage.put(`draft:${draft.id}`, {
+			id: draft.id,
+			featureId: feature.id,
+			model: draft.model,
+			baseSha: trunk.head,
+			changed: {},
+			examples: [],
+			assumptions: [],
+		} satisfies DraftRecord);
+		this.setDraft(draft.id, (x) => {
+			x.status = "drafting";
+			x.repo = workspace.name;
+		});
+		// Give the external agent time before the watchdog moves on without it.
+		await this.schedule(15 * 60, "watchdog");
+		this.log("draft", `An external agent (${name}) took a seat on ${feature.title} with its own fork.`);
+		const token = await writeToken(this.env, workspace.name, 3600);
+		return {
+			ok: true as const,
+			seat: {
+				draftId: draft.id,
+				secret,
+				ticket: { id: feature.id, title: feature.title, spec: feature.spec },
+				remote: workspace.remote,
+				token,
+				base: workspace.parent,
+				precedents: this.briefs(feature.id),
+			},
+		};
+	}
+
+	/** An external agent pushed its draft to its fork: read it back and enter it like any other draft. */
+	async submitSeat(input: { draftId: string; secret: string; assumptions?: unknown; examples?: unknown }) {
+		const seat = await this.ctx.storage.get<{ secret: string; workspace: { name: string; remote: string; parent: string }; openedAt: number }>(`seat:${input.draftId}`);
+		if (!seat || seat.secret !== input.secret) return { ok: false as const, error: "unknown seat" };
+		const view = this.state.drafts.find((d) => d.id === input.draftId);
+		if (!view || view.status !== "drafting") return { ok: false as const, error: "this seat has already submitted or timed out" };
+		const rec = (await this.getDraft(input.draftId))!;
+		const token = await readToken(this.env, seat.workspace.name, 300);
+		const head = (await headOf(seat.workspace.remote, token, "refs/heads/draft")) ?? (await headOf(seat.workspace.remote, token));
+		if (!head || head === seat.workspace.parent) return { ok: false as const, error: "push your commit to the fork first (branch draft or main)" };
+		const { files } = await readFilesAt(this.env, seat.workspace.name, head);
+		const base = (await this.snapshot(rec.baseSha)) ?? (await this.trunkFiles());
+		const changed: Record<string, string> = {};
+		for (const [path, content] of Object.entries(files)) if (path.startsWith("src/") && path.endsWith(".js") && base[path] !== content) changed[path] = content;
+		if (!Object.keys(changed).length) return { ok: false as const, error: "the pushed commit changes nothing under src/" };
+		const assumptions = Array.isArray(input.assumptions) ? input.assumptions.filter((a): a is string => typeof a === "string").map((a) => a.slice(0, 200)).slice(0, 6) : [];
+		const examples = Array.isArray(input.examples)
+			? (input.examples as { input?: unknown; expected?: unknown }[])
+					.filter((e) => e && typeof e.input === "object" && e.input && Array.isArray((e.input as { items?: unknown }).items))
+					.map((e) => ({ input: e.input as Cart, expected: (e.expected ?? {}) as Record<string, unknown> }))
+					.slice(0, 6)
+			: [];
+		await this.report({
+			draftId: input.draftId,
+			ok: true,
+			repo: seat.workspace.name,
+			commit: head,
+			treeHash: await treeHashOf({ ...base, ...changed }),
+			changed,
+			examples,
+			assumptions,
+			ms: Date.now() - seat.openedAt,
+		});
+		return { ok: true as const, commit: head };
 	}
 
 	// ── read-only helpers for the API ────────────────────────────────────────

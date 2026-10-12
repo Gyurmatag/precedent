@@ -154,8 +154,11 @@ usually the real difference.
 Then return:
 - headline: the product decision as a concrete question of at most 14 words that names that specific
   trigger, e.g. "Should a 12.5% coupon be accepted, or only whole percentages?"
-- labels: for each option key, the rule it implies for carts like this, in at most 10 words, concrete
-  (mention amounts or conditions), e.g. "Accept fractional percent: €3.00 off".
+- labels: for each option key, the rule its RECEIPT shows for carts like this, in at most 10 words,
+  concrete (mention amounts or conditions), e.g. "Accept fractional percent: €3.00 off".
+  The receipts are the ground truth. Agents' stated assumptions can be wrong about their own code:
+  if an assumption contradicts the receipt, ignore the assumption. A label must never contradict
+  its receipt's numbers.
 - why: for each option, the one assumption from that option's list that explains it, copied verbatim,
   or "" if none of them is about this difference.`,
 	};
